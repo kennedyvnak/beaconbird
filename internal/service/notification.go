@@ -49,6 +49,7 @@ type IngestParams struct {
 	IdempotencyKey string
 	Tag            string
 	Metadata       map[string]any
+	IsTest         bool
 }
 
 type EditContentParams struct {
@@ -132,6 +133,7 @@ func (s *NotificationService) Ingest(ctx context.Context, params IngestParams) (
 			Payload:        cloneMap(delivery.Payload),
 			SendAt:         sendAt,
 			MaxRetries:     s.maxRetries,
+			IsTest:         params.IsTest,
 		})
 	}
 

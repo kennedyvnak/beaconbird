@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/kennedyvnak/beaconbird/internal/api/middleware"
 	"github.com/kennedyvnak/beaconbird/internal/domain"
 	"github.com/kennedyvnak/beaconbird/internal/service"
 )
@@ -82,6 +83,62 @@ func TestNotificationHandlerCreateReturnsBadRequestForInvalidSendAt(t *testing.T
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestNotificationHandlerCreateSetsIsTestFromTestAPIKey(t *testing.T) {
+	svc := &fakeNotificationService{
+		ingestNotification: &domain.Notification{
+			ID:             "notif-1",
+			IdempotencyKey: "idem-1",
+			Status:         domain.NotificationStatusPending,
+		},
+	}
+	h := NewNotificationHandler(svc, &fakeNotificationReader{}, &fakeDeliveryJobReader{})
+
+	body := []byte(`{"deliveries":[{"channel":"push","payload":{"title":"hello"}}],"send_at":"now","idempotency_key":"idem-1"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/notifications", bytes.NewReader(body))
+	req = req.WithContext(middleware.ContextWithAPIKey(req.Context(), &domain.APIKey{
+		ID:   "key-1",
+		Mode: domain.APIKeyModeTest,
+	}))
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", rec.Code)
+	}
+	if !svc.ingestParams.IsTest {
+		t.Fatalf("expected handler to set IsTest from test API key")
+	}
+}
+
+func TestNotificationHandlerBulkCreateSetsIsTestFromTestAPIKey(t *testing.T) {
+	svc := &fakeNotificationService{
+		ingestNotification: &domain.Notification{
+			ID:             "notif-1",
+			IdempotencyKey: "idem-1",
+			Status:         domain.NotificationStatusPending,
+		},
+	}
+	h := NewNotificationHandler(svc, &fakeNotificationReader{}, &fakeDeliveryJobReader{})
+
+	body := []byte(`{"notifications":[{"deliveries":[{"channel":"push","payload":{"title":"hello"}}],"send_at":"now","idempotency_key":"idem-1"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/notifications/bulk", bytes.NewReader(body))
+	req = req.WithContext(middleware.ContextWithAPIKey(req.Context(), &domain.APIKey{
+		ID:   "key-1",
+		Mode: domain.APIKeyModeTest,
+	}))
+	rec := httptest.NewRecorder()
+
+	h.BulkCreate(rec, req)
+
+	if rec.Code != http.StatusMultiStatus {
+		t.Fatalf("expected 207, got %d", rec.Code)
+	}
+	if !svc.ingestParams.IsTest {
+		t.Fatalf("expected handler to set IsTest from test API key")
 	}
 }
 

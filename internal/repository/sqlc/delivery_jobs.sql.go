@@ -20,7 +20,7 @@ SET status = 'cancelled',
     updated_at = $1
 WHERE notification_id = $2
   AND status IN ('pending', 'retrying')
-RETURNING id, notification_id, provider_id, channel, status, payload, send_at, locked_at, locked_by, heartbeat_at, retry_count, max_retries, next_retry_at, last_error, created_at, updated_at
+RETURNING id, notification_id, provider_id, channel, status, payload, send_at, locked_at, locked_by, heartbeat_at, retry_count, max_retries, next_retry_at, last_error, created_at, updated_at, is_test
 `
 
 type CancelDeliveryJobsForNotificationParams struct {
@@ -54,6 +54,7 @@ func (q *Queries) CancelDeliveryJobsForNotification(ctx context.Context, arg Can
 			&i.LastError,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.IsTest,
 		); err != nil {
 			return nil, err
 		}
@@ -74,7 +75,8 @@ INSERT INTO delivery_jobs (
     status,
     payload,
     send_at,
-    max_retries
+    max_retries,
+    is_test
 ) VALUES (
     $1,
     $2,
@@ -83,9 +85,10 @@ INSERT INTO delivery_jobs (
     $5,
     $6,
     $7,
-    $8
+    $8,
+    $9
 )
-RETURNING id, notification_id, provider_id, channel, status, payload, send_at, locked_at, locked_by, heartbeat_at, retry_count, max_retries, next_retry_at, last_error, created_at, updated_at
+RETURNING id, notification_id, provider_id, channel, status, payload, send_at, locked_at, locked_by, heartbeat_at, retry_count, max_retries, next_retry_at, last_error, created_at, updated_at, is_test
 `
 
 type CreateDeliveryJobParams struct {
@@ -97,6 +100,7 @@ type CreateDeliveryJobParams struct {
 	Payload        []byte
 	SendAt         pgtype.Timestamptz
 	MaxRetries     int32
+	IsTest         bool
 }
 
 func (q *Queries) CreateDeliveryJob(ctx context.Context, arg CreateDeliveryJobParams) (DeliveryJob, error) {
@@ -109,6 +113,7 @@ func (q *Queries) CreateDeliveryJob(ctx context.Context, arg CreateDeliveryJobPa
 		arg.Payload,
 		arg.SendAt,
 		arg.MaxRetries,
+		arg.IsTest,
 	)
 	var i DeliveryJob
 	err := row.Scan(
@@ -128,12 +133,13 @@ func (q *Queries) CreateDeliveryJob(ctx context.Context, arg CreateDeliveryJobPa
 		&i.LastError,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.IsTest,
 	)
 	return i, err
 }
 
 const getDeliveryJob = `-- name: GetDeliveryJob :one
-SELECT id, notification_id, provider_id, channel, status, payload, send_at, locked_at, locked_by, heartbeat_at, retry_count, max_retries, next_retry_at, last_error, created_at, updated_at
+SELECT id, notification_id, provider_id, channel, status, payload, send_at, locked_at, locked_by, heartbeat_at, retry_count, max_retries, next_retry_at, last_error, created_at, updated_at, is_test
 FROM delivery_jobs
 WHERE id = $1
 `
@@ -158,12 +164,13 @@ func (q *Queries) GetDeliveryJob(ctx context.Context, id string) (DeliveryJob, e
 		&i.LastError,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.IsTest,
 	)
 	return i, err
 }
 
 const listDeliveryJobs = `-- name: ListDeliveryJobs :many
-SELECT id, notification_id, provider_id, channel, status, payload, send_at, locked_at, locked_by, heartbeat_at, retry_count, max_retries, next_retry_at, last_error, created_at, updated_at
+SELECT id, notification_id, provider_id, channel, status, payload, send_at, locked_at, locked_by, heartbeat_at, retry_count, max_retries, next_retry_at, last_error, created_at, updated_at, is_test
 FROM delivery_jobs
 WHERE ($1 = '' OR status = $1)
   AND ($2 = '' OR channel = $2)
@@ -219,6 +226,7 @@ func (q *Queries) ListDeliveryJobs(ctx context.Context, arg ListDeliveryJobsPara
 			&i.LastError,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.IsTest,
 		); err != nil {
 			return nil, err
 		}
@@ -231,7 +239,7 @@ func (q *Queries) ListDeliveryJobs(ctx context.Context, arg ListDeliveryJobsPara
 }
 
 const listDeliveryJobsByNotificationID = `-- name: ListDeliveryJobsByNotificationID :many
-SELECT id, notification_id, provider_id, channel, status, payload, send_at, locked_at, locked_by, heartbeat_at, retry_count, max_retries, next_retry_at, last_error, created_at, updated_at
+SELECT id, notification_id, provider_id, channel, status, payload, send_at, locked_at, locked_by, heartbeat_at, retry_count, max_retries, next_retry_at, last_error, created_at, updated_at, is_test
 FROM delivery_jobs
 WHERE notification_id = $1
 ORDER BY created_at DESC
@@ -263,6 +271,7 @@ func (q *Queries) ListDeliveryJobsByNotificationID(ctx context.Context, notifica
 			&i.LastError,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.IsTest,
 		); err != nil {
 			return nil, err
 		}
@@ -274,25 +283,36 @@ func (q *Queries) ListDeliveryJobsByNotificationID(ctx context.Context, notifica
 	return items, nil
 }
 
-const listReadyDeliveryJobs = `-- name: ListReadyDeliveryJobs :many
-SELECT id, notification_id, provider_id, channel, status, payload, send_at, locked_at, locked_by, heartbeat_at, retry_count, max_retries, next_retry_at, last_error, created_at, updated_at
-FROM delivery_jobs
-WHERE locked_at IS NULL
-  AND (
-    (status = 'pending' AND send_at <= $1)
-    OR (status = 'retrying' AND next_retry_at IS NOT NULL AND next_retry_at <= $1)
-  )
-ORDER BY send_at ASC, created_at ASC
-LIMIT $2
+const lockReadyJobs = `-- name: LockReadyJobs :many
+WITH ready_jobs AS (
+    SELECT id
+    FROM delivery_jobs
+    WHERE locked_at IS NULL
+      AND (
+        (status = 'pending' AND send_at <= NOW())
+        OR (status = 'retrying' AND next_retry_at IS NOT NULL AND next_retry_at <= NOW())
+      )
+    ORDER BY send_at ASC, created_at ASC
+    LIMIT $2
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE delivery_jobs
+SET status = 'processing',
+    locked_at = NOW(),
+    locked_by = $1,
+    heartbeat_at = NOW(),
+    updated_at = NOW()
+WHERE id IN (SELECT id FROM ready_jobs)
+RETURNING id, notification_id, provider_id, channel, status, payload, send_at, locked_at, locked_by, heartbeat_at, retry_count, max_retries, next_retry_at, last_error, created_at, updated_at, is_test
 `
 
-type ListReadyDeliveryJobsParams struct {
-	ReadyAt    pgtype.Timestamptz
+type LockReadyJobsParams struct {
+	WorkerID   pgtype.Text
 	LimitCount int32
 }
 
-func (q *Queries) ListReadyDeliveryJobs(ctx context.Context, arg ListReadyDeliveryJobsParams) ([]DeliveryJob, error) {
-	rows, err := q.db.Query(ctx, listReadyDeliveryJobs, arg.ReadyAt, arg.LimitCount)
+func (q *Queries) LockReadyJobs(ctx context.Context, arg LockReadyJobsParams) ([]DeliveryJob, error) {
+	rows, err := q.db.Query(ctx, lockReadyJobs, arg.WorkerID, arg.LimitCount)
 	if err != nil {
 		return nil, err
 	}
@@ -317,6 +337,7 @@ func (q *Queries) ListReadyDeliveryJobs(ctx context.Context, arg ListReadyDelive
 			&i.LastError,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.IsTest,
 		); err != nil {
 			return nil, err
 		}
@@ -328,26 +349,25 @@ func (q *Queries) ListReadyDeliveryJobs(ctx context.Context, arg ListReadyDelive
 	return items, nil
 }
 
-const markDeliveryJobDeadLetter = `-- name: MarkDeliveryJobDeadLetter :one
+const markJobDeadLetter = `-- name: MarkJobDeadLetter :one
 UPDATE delivery_jobs
 SET status = 'dead_letter',
     last_error = $1,
     locked_at = NULL,
     locked_by = NULL,
     heartbeat_at = NULL,
-    updated_at = $2
-WHERE id = $3
-RETURNING id, notification_id, provider_id, channel, status, payload, send_at, locked_at, locked_by, heartbeat_at, retry_count, max_retries, next_retry_at, last_error, created_at, updated_at
+    updated_at = NOW()
+WHERE id = $2
+RETURNING id, notification_id, provider_id, channel, status, payload, send_at, locked_at, locked_by, heartbeat_at, retry_count, max_retries, next_retry_at, last_error, created_at, updated_at, is_test
 `
 
-type MarkDeliveryJobDeadLetterParams struct {
+type MarkJobDeadLetterParams struct {
 	LastError pgtype.Text
-	UpdatedAt pgtype.Timestamptz
 	ID        string
 }
 
-func (q *Queries) MarkDeliveryJobDeadLetter(ctx context.Context, arg MarkDeliveryJobDeadLetterParams) (DeliveryJob, error) {
-	row := q.db.QueryRow(ctx, markDeliveryJobDeadLetter, arg.LastError, arg.UpdatedAt, arg.ID)
+func (q *Queries) MarkJobDeadLetter(ctx context.Context, arg MarkJobDeadLetterParams) (DeliveryJob, error) {
+	row := q.db.QueryRow(ctx, markJobDeadLetter, arg.LastError, arg.ID)
 	var i DeliveryJob
 	err := row.Scan(
 		&i.ID,
@@ -366,11 +386,12 @@ func (q *Queries) MarkDeliveryJobDeadLetter(ctx context.Context, arg MarkDeliver
 		&i.LastError,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.IsTest,
 	)
 	return i, err
 }
 
-const markDeliveryJobForRetry = `-- name: MarkDeliveryJobForRetry :one
+const markJobRetrying = `-- name: MarkJobRetrying :one
 UPDATE delivery_jobs
 SET status = 'retrying',
     retry_count = retry_count + 1,
@@ -379,25 +400,19 @@ SET status = 'retrying',
     locked_at = NULL,
     locked_by = NULL,
     heartbeat_at = NULL,
-    updated_at = $3
-WHERE id = $4
-RETURNING id, notification_id, provider_id, channel, status, payload, send_at, locked_at, locked_by, heartbeat_at, retry_count, max_retries, next_retry_at, last_error, created_at, updated_at
+    updated_at = NOW()
+WHERE id = $3
+RETURNING id, notification_id, provider_id, channel, status, payload, send_at, locked_at, locked_by, heartbeat_at, retry_count, max_retries, next_retry_at, last_error, created_at, updated_at, is_test
 `
 
-type MarkDeliveryJobForRetryParams struct {
+type MarkJobRetryingParams struct {
 	NextRetryAt pgtype.Timestamptz
 	LastError   pgtype.Text
-	UpdatedAt   pgtype.Timestamptz
 	ID          string
 }
 
-func (q *Queries) MarkDeliveryJobForRetry(ctx context.Context, arg MarkDeliveryJobForRetryParams) (DeliveryJob, error) {
-	row := q.db.QueryRow(ctx, markDeliveryJobForRetry,
-		arg.NextRetryAt,
-		arg.LastError,
-		arg.UpdatedAt,
-		arg.ID,
-	)
+func (q *Queries) MarkJobRetrying(ctx context.Context, arg MarkJobRetryingParams) (DeliveryJob, error) {
+	row := q.db.QueryRow(ctx, markJobRetrying, arg.NextRetryAt, arg.LastError, arg.ID)
 	var i DeliveryJob
 	err := row.Scan(
 		&i.ID,
@@ -416,79 +431,25 @@ func (q *Queries) MarkDeliveryJobForRetry(ctx context.Context, arg MarkDeliveryJ
 		&i.LastError,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.IsTest,
 	)
 	return i, err
 }
 
-const markDeliveryJobProcessing = `-- name: MarkDeliveryJobProcessing :one
-UPDATE delivery_jobs
-SET status = 'processing',
-    locked_at = $1,
-    locked_by = $2,
-    heartbeat_at = $3,
-    updated_at = $4
-WHERE id = $5
-  AND locked_at IS NULL
-RETURNING id, notification_id, provider_id, channel, status, payload, send_at, locked_at, locked_by, heartbeat_at, retry_count, max_retries, next_retry_at, last_error, created_at, updated_at
-`
-
-type MarkDeliveryJobProcessingParams struct {
-	LockedAt    pgtype.Timestamptz
-	LockedBy    pgtype.Text
-	HeartbeatAt pgtype.Timestamptz
-	UpdatedAt   pgtype.Timestamptz
-	ID          string
-}
-
-func (q *Queries) MarkDeliveryJobProcessing(ctx context.Context, arg MarkDeliveryJobProcessingParams) (DeliveryJob, error) {
-	row := q.db.QueryRow(ctx, markDeliveryJobProcessing,
-		arg.LockedAt,
-		arg.LockedBy,
-		arg.HeartbeatAt,
-		arg.UpdatedAt,
-		arg.ID,
-	)
-	var i DeliveryJob
-	err := row.Scan(
-		&i.ID,
-		&i.NotificationID,
-		&i.ProviderID,
-		&i.Channel,
-		&i.Status,
-		&i.Payload,
-		&i.SendAt,
-		&i.LockedAt,
-		&i.LockedBy,
-		&i.HeartbeatAt,
-		&i.RetryCount,
-		&i.MaxRetries,
-		&i.NextRetryAt,
-		&i.LastError,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const markDeliveryJobSent = `-- name: MarkDeliveryJobSent :one
+const markJobSent = `-- name: MarkJobSent :one
 UPDATE delivery_jobs
 SET status = 'sent',
     locked_at = NULL,
     locked_by = NULL,
     heartbeat_at = NULL,
     last_error = NULL,
-    updated_at = $1
-WHERE id = $2
-RETURNING id, notification_id, provider_id, channel, status, payload, send_at, locked_at, locked_by, heartbeat_at, retry_count, max_retries, next_retry_at, last_error, created_at, updated_at
+    updated_at = NOW()
+WHERE id = $1
+RETURNING id, notification_id, provider_id, channel, status, payload, send_at, locked_at, locked_by, heartbeat_at, retry_count, max_retries, next_retry_at, last_error, created_at, updated_at, is_test
 `
 
-type MarkDeliveryJobSentParams struct {
-	UpdatedAt pgtype.Timestamptz
-	ID        string
-}
-
-func (q *Queries) MarkDeliveryJobSent(ctx context.Context, arg MarkDeliveryJobSentParams) (DeliveryJob, error) {
-	row := q.db.QueryRow(ctx, markDeliveryJobSent, arg.UpdatedAt, arg.ID)
+func (q *Queries) MarkJobSent(ctx context.Context, id string) (DeliveryJob, error) {
+	row := q.db.QueryRow(ctx, markJobSent, id)
 	var i DeliveryJob
 	err := row.Scan(
 		&i.ID,
@@ -507,8 +468,68 @@ func (q *Queries) MarkDeliveryJobSent(ctx context.Context, arg MarkDeliveryJobSe
 		&i.LastError,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.IsTest,
 	)
 	return i, err
+}
+
+const recoverStaleJobs = `-- name: RecoverStaleJobs :many
+UPDATE delivery_jobs
+SET status = CASE
+        WHEN retry_count > 0 THEN 'retrying'
+        ELSE 'pending'
+    END,
+    locked_at = NULL,
+    locked_by = NULL,
+    heartbeat_at = NULL,
+    updated_at = $1
+WHERE locked_at IS NOT NULL
+  AND heartbeat_at IS NOT NULL
+  AND heartbeat_at < $2
+RETURNING id, notification_id, provider_id, channel, status, payload, send_at, locked_at, locked_by, heartbeat_at, retry_count, max_retries, next_retry_at, last_error, created_at, updated_at, is_test
+`
+
+type RecoverStaleJobsParams struct {
+	UpdatedAt   pgtype.Timestamptz
+	StaleBefore pgtype.Timestamptz
+}
+
+func (q *Queries) RecoverStaleJobs(ctx context.Context, arg RecoverStaleJobsParams) ([]DeliveryJob, error) {
+	rows, err := q.db.Query(ctx, recoverStaleJobs, arg.UpdatedAt, arg.StaleBefore)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DeliveryJob
+	for rows.Next() {
+		var i DeliveryJob
+		if err := rows.Scan(
+			&i.ID,
+			&i.NotificationID,
+			&i.ProviderID,
+			&i.Channel,
+			&i.Status,
+			&i.Payload,
+			&i.SendAt,
+			&i.LockedAt,
+			&i.LockedBy,
+			&i.HeartbeatAt,
+			&i.RetryCount,
+			&i.MaxRetries,
+			&i.NextRetryAt,
+			&i.LastError,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.IsTest,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const rescheduleDeliveryJobsForNotification = `-- name: RescheduleDeliveryJobsForNotification :execrows
@@ -533,64 +554,6 @@ func (q *Queries) RescheduleDeliveryJobsForNotification(ctx context.Context, arg
 	return result.RowsAffected(), nil
 }
 
-const resetStaleDeliveryJobs = `-- name: ResetStaleDeliveryJobs :many
-UPDATE delivery_jobs
-SET status = CASE
-        WHEN retry_count > 0 THEN 'retrying'
-        ELSE 'pending'
-    END,
-    locked_at = NULL,
-    locked_by = NULL,
-    heartbeat_at = NULL,
-    updated_at = $1
-WHERE locked_at IS NOT NULL
-  AND heartbeat_at IS NOT NULL
-  AND heartbeat_at < $2
-RETURNING id, notification_id, provider_id, channel, status, payload, send_at, locked_at, locked_by, heartbeat_at, retry_count, max_retries, next_retry_at, last_error, created_at, updated_at
-`
-
-type ResetStaleDeliveryJobsParams struct {
-	UpdatedAt   pgtype.Timestamptz
-	StaleBefore pgtype.Timestamptz
-}
-
-func (q *Queries) ResetStaleDeliveryJobs(ctx context.Context, arg ResetStaleDeliveryJobsParams) ([]DeliveryJob, error) {
-	rows, err := q.db.Query(ctx, resetStaleDeliveryJobs, arg.UpdatedAt, arg.StaleBefore)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []DeliveryJob
-	for rows.Next() {
-		var i DeliveryJob
-		if err := rows.Scan(
-			&i.ID,
-			&i.NotificationID,
-			&i.ProviderID,
-			&i.Channel,
-			&i.Status,
-			&i.Payload,
-			&i.SendAt,
-			&i.LockedAt,
-			&i.LockedBy,
-			&i.HeartbeatAt,
-			&i.RetryCount,
-			&i.MaxRetries,
-			&i.NextRetryAt,
-			&i.LastError,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const updateDeliveryJobPayloadForNotification = `-- name: UpdateDeliveryJobPayloadForNotification :execrows
 UPDATE delivery_jobs
 SET payload = $1,
@@ -613,54 +576,18 @@ func (q *Queries) UpdateDeliveryJobPayloadForNotification(ctx context.Context, a
 	return result.RowsAffected(), nil
 }
 
-const updateHeartbeatForWorker = `-- name: UpdateHeartbeatForWorker :many
+const updateHeartbeat = `-- name: UpdateHeartbeat :execrows
 UPDATE delivery_jobs
-SET heartbeat_at = $1,
-    updated_at = $2
-WHERE locked_by = $3
-  AND status = 'processing'
-RETURNING id, notification_id, provider_id, channel, status, payload, send_at, locked_at, locked_by, heartbeat_at, retry_count, max_retries, next_retry_at, last_error, created_at, updated_at
+SET heartbeat_at = NOW(),
+    updated_at = NOW()
+WHERE locked_by = $1
+  AND locked_at IS NOT NULL
 `
 
-type UpdateHeartbeatForWorkerParams struct {
-	HeartbeatAt pgtype.Timestamptz
-	UpdatedAt   pgtype.Timestamptz
-	LockedBy    pgtype.Text
-}
-
-func (q *Queries) UpdateHeartbeatForWorker(ctx context.Context, arg UpdateHeartbeatForWorkerParams) ([]DeliveryJob, error) {
-	rows, err := q.db.Query(ctx, updateHeartbeatForWorker, arg.HeartbeatAt, arg.UpdatedAt, arg.LockedBy)
+func (q *Queries) UpdateHeartbeat(ctx context.Context, workerID pgtype.Text) (int64, error) {
+	result, err := q.db.Exec(ctx, updateHeartbeat, workerID)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	defer rows.Close()
-	var items []DeliveryJob
-	for rows.Next() {
-		var i DeliveryJob
-		if err := rows.Scan(
-			&i.ID,
-			&i.NotificationID,
-			&i.ProviderID,
-			&i.Channel,
-			&i.Status,
-			&i.Payload,
-			&i.SendAt,
-			&i.LockedAt,
-			&i.LockedBy,
-			&i.HeartbeatAt,
-			&i.RetryCount,
-			&i.MaxRetries,
-			&i.NextRetryAt,
-			&i.LastError,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+	return result.RowsAffected(), nil
 }

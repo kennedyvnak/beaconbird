@@ -104,6 +104,41 @@ func TestNotificationServiceIngestCreatesNotificationAndJobs(t *testing.T) {
 	}
 }
 
+func TestNotificationServiceIngestSetsIsTestOnCreatedJobs(t *testing.T) {
+	notifications := &fakeNotificationRepo{}
+	jobs := &fakeDeliveryJobRepo{}
+	svc := NewNotificationService(notifications, jobs)
+	svc.idGenerator = func() string {
+		ids := []string{"notif-1", "job-1"}
+		next := ids[0]
+		ids = ids[1:]
+		svc.idGenerator = func() string {
+			v := ids[0]
+			ids = ids[1:]
+			return v
+		}
+		return next
+	}
+
+	_, _, err := svc.Ingest(context.Background(), IngestParams{
+		IdempotencyKey: "idem-test",
+		SendAt:         "now",
+		IsTest:         true,
+		Deliveries: []DeliveryTarget{
+			{Channel: domain.ChannelPush, Payload: map[string]any{"title": "hello"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ingest returned error: %v", err)
+	}
+	if len(jobs.created) != 1 {
+		t.Fatalf("expected 1 created job, got %d", len(jobs.created))
+	}
+	if !jobs.created[0].IsTest {
+		t.Fatalf("expected created job to be marked as test")
+	}
+}
+
 func TestNotificationServiceIngestRejectsPastSendAt(t *testing.T) {
 	notifications := &fakeNotificationRepo{}
 	jobs := &fakeDeliveryJobRepo{}

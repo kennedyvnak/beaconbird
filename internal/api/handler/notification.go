@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kennedyvnak/beaconbird/internal/api/dto"
+	"github.com/kennedyvnak/beaconbird/internal/api/middleware"
 	"github.com/kennedyvnak/beaconbird/internal/domain"
 	"github.com/kennedyvnak/beaconbird/internal/service"
 )
@@ -65,6 +66,9 @@ func (h *NotificationHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if key := middleware.APIKeyFromContext(r.Context()); key != nil {
+		params.IsTest = key.Mode == domain.APIKeyModeTest
+	}
 
 	notification, wasExisting, err := h.service.Ingest(r.Context(), params)
 	if err != nil {
@@ -102,6 +106,9 @@ func (h *NotificationHandler) BulkCreate(w http.ResponseWriter, r *http.Request)
 				Error:          &msg,
 			})
 			continue
+		}
+		if key := middleware.APIKeyFromContext(r.Context()); key != nil {
+			params.IsTest = key.Mode == domain.APIKeyModeTest
 		}
 
 		notification, wasExisting, err := h.service.Ingest(r.Context(), params)

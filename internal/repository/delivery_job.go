@@ -29,6 +29,7 @@ func (r *DeliveryJobRepo) Create(ctx context.Context, j *domain.DeliveryJob) (*d
 		Payload:        marshalJSON(j.Payload),
 		SendAt:         toPgTime(j.SendAt),
 		MaxRetries:     j.MaxRetries,
+		IsTest:         j.IsTest,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("deliveryJobRepo.Create: %w", err)
@@ -74,13 +75,13 @@ func (r *DeliveryJobRepo) List(ctx context.Context, p ListDeliveryJobsParams) ([
 	return result, nil
 }
 
-func (r *DeliveryJobRepo) ListReady(ctx context.Context, readyAt time.Time, limit int32) ([]*domain.DeliveryJob, error) {
-	rows, err := queriesFor(ctx, r.q).ListReadyDeliveryJobs(ctx, sqlc.ListReadyDeliveryJobsParams{
-		ReadyAt:    toPgTime(readyAt),
+func (r *DeliveryJobRepo) LockReady(ctx context.Context, workerID string, limit int32) ([]*domain.DeliveryJob, error) {
+	rows, err := queriesFor(ctx, r.q).LockReadyJobs(ctx, sqlc.LockReadyJobsParams{
+		WorkerID:   toPgText(&workerID),
 		LimitCount: limit,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("deliveryJobRepo.ListReady: %w", err)
+		return nil, fmt.Errorf("deliveryJobRepo.LockReady: %w", err)
 	}
 	result := make([]*domain.DeliveryJob, len(rows))
 	for i, row := range rows {
@@ -89,50 +90,30 @@ func (r *DeliveryJobRepo) ListReady(ctx context.Context, readyAt time.Time, limi
 	return result, nil
 }
 
-func (r *DeliveryJobRepo) MarkProcessing(ctx context.Context, id, workerID string) (*domain.DeliveryJob, error) {
-	now := time.Now().UTC()
-	row, err := queriesFor(ctx, r.q).MarkDeliveryJobProcessing(ctx, sqlc.MarkDeliveryJobProcessingParams{
-		ID:          id,
-		LockedAt:    toPgTime(now),
-		LockedBy:    toPgText(&workerID),
-		HeartbeatAt: toPgTime(now),
-		UpdatedAt:   toPgTime(now),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("deliveryJobRepo.MarkProcessing: %w", err)
-	}
-	return toDeliveryJob(row), nil
-}
-
 func (r *DeliveryJobRepo) MarkSent(ctx context.Context, id string) (*domain.DeliveryJob, error) {
-	row, err := queriesFor(ctx, r.q).MarkDeliveryJobSent(ctx, sqlc.MarkDeliveryJobSentParams{
-		ID:        id,
-		UpdatedAt: toPgTime(time.Now().UTC()),
-	})
+	row, err := queriesFor(ctx, r.q).MarkJobSent(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("deliveryJobRepo.MarkSent: %w", err)
 	}
 	return toDeliveryJob(row), nil
 }
 
-func (r *DeliveryJobRepo) MarkRetry(ctx context.Context, id string, nextRetryAt time.Time, lastError *string) (*domain.DeliveryJob, error) {
-	row, err := queriesFor(ctx, r.q).MarkDeliveryJobForRetry(ctx, sqlc.MarkDeliveryJobForRetryParams{
+func (r *DeliveryJobRepo) MarkRetrying(ctx context.Context, id string, nextRetryAt time.Time, lastError *string) (*domain.DeliveryJob, error) {
+	row, err := queriesFor(ctx, r.q).MarkJobRetrying(ctx, sqlc.MarkJobRetryingParams{
 		ID:          id,
 		NextRetryAt: toPgTime(nextRetryAt),
 		LastError:   toPgText(lastError),
-		UpdatedAt:   toPgTime(time.Now().UTC()),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("deliveryJobRepo.MarkRetry: %w", err)
+		return nil, fmt.Errorf("deliveryJobRepo.MarkRetrying: %w", err)
 	}
 	return toDeliveryJob(row), nil
 }
 
 func (r *DeliveryJobRepo) MarkDeadLetter(ctx context.Context, id string, lastError *string) (*domain.DeliveryJob, error) {
-	row, err := queriesFor(ctx, r.q).MarkDeliveryJobDeadLetter(ctx, sqlc.MarkDeliveryJobDeadLetterParams{
+	row, err := queriesFor(ctx, r.q).MarkJobDeadLetter(ctx, sqlc.MarkJobDeadLetterParams{
 		ID:        id,
 		LastError: toPgText(lastError),
-		UpdatedAt: toPgTime(time.Now().UTC()),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("deliveryJobRepo.MarkDeadLetter: %w", err)
@@ -155,13 +136,12 @@ func (r *DeliveryJobRepo) CancelForNotification(ctx context.Context, notificatio
 	return result, nil
 }
 
-func (r *DeliveryJobRepo) ResetStale(ctx context.Context, staleBefore time.Time) ([]*domain.DeliveryJob, error) {
-	rows, err := queriesFor(ctx, r.q).ResetStaleDeliveryJobs(ctx, sqlc.ResetStaleDeliveryJobsParams{
+func (r *DeliveryJobRepo) RecoverStale(ctx context.Context, staleBefore time.Time) ([]*domain.DeliveryJob, error) {
+	rows, err := queriesFor(ctx, r.q).RecoverStaleJobs(ctx, sqlc.RecoverStaleJobsParams{
 		StaleBefore: toPgTime(staleBefore),
-		UpdatedAt:   toPgTime(time.Now().UTC()),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("deliveryJobRepo.ResetStale: %w", err)
+		return nil, fmt.Errorf("deliveryJobRepo.RecoverStale: %w", err)
 	}
 	result := make([]*domain.DeliveryJob, len(rows))
 	for i, row := range rows {
@@ -171,16 +151,39 @@ func (r *DeliveryJobRepo) ResetStale(ctx context.Context, staleBefore time.Time)
 }
 
 func (r *DeliveryJobRepo) UpdateHeartbeat(ctx context.Context, workerID string) error {
-	now := time.Now().UTC()
-	_, err := queriesFor(ctx, r.q).UpdateHeartbeatForWorker(ctx, sqlc.UpdateHeartbeatForWorkerParams{
-		LockedBy:    toPgText(&workerID),
-		HeartbeatAt: toPgTime(now),
-		UpdatedAt:   toPgTime(now),
-	})
+	_, err := queriesFor(ctx, r.q).UpdateHeartbeat(ctx, toPgText(&workerID))
 	if err != nil {
 		return fmt.Errorf("deliveryJobRepo.UpdateHeartbeat: %w", err)
 	}
 	return nil
+}
+
+func (r *DeliveryJobRepo) ListReady(ctx context.Context, _ time.Time, limit int32) ([]*domain.DeliveryJob, error) {
+	return r.LockReady(ctx, "", limit)
+}
+
+func (r *DeliveryJobRepo) MarkRetry(ctx context.Context, id string, nextRetryAt time.Time, lastError *string) (*domain.DeliveryJob, error) {
+	return r.MarkRetrying(ctx, id, nextRetryAt, lastError)
+}
+
+func (r *DeliveryJobRepo) ResetStale(ctx context.Context, staleBefore time.Time) ([]*domain.DeliveryJob, error) {
+	return r.RecoverStale(ctx, staleBefore)
+}
+
+func (r *DeliveryJobRepo) MarkProcessing(ctx context.Context, id, workerID string) (*domain.DeliveryJob, error) {
+	rows, err := queriesFor(ctx, r.q).LockReadyJobs(ctx, sqlc.LockReadyJobsParams{
+		WorkerID:   toPgText(&workerID),
+		LimitCount: 1,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("deliveryJobRepo.MarkProcessing: %w", err)
+	}
+	for _, row := range rows {
+		if row.ID == id {
+			return toDeliveryJob(row), nil
+		}
+	}
+	return nil, pgx.ErrNoRows
 }
 
 func (r *DeliveryJobRepo) CreateBatch(ctx context.Context, jobs []*domain.DeliveryJob) error {
@@ -195,6 +198,7 @@ func (r *DeliveryJobRepo) CreateBatch(ctx context.Context, jobs []*domain.Delive
 				Payload:        marshalJSON(job.Payload),
 				SendAt:         toPgTime(job.SendAt),
 				MaxRetries:     job.MaxRetries,
+				IsTest:         job.IsTest,
 			})
 			if err != nil {
 				return fmt.Errorf("deliveryJobRepo.CreateBatch create job: %w", err)
@@ -227,6 +231,7 @@ func (r *DeliveryJobRepo) CreateBatch(ctx context.Context, jobs []*domain.Delive
 			Payload:        marshalJSON(job.Payload),
 			SendAt:         toPgTime(job.SendAt),
 			MaxRetries:     job.MaxRetries,
+			IsTest:         job.IsTest,
 		})
 		if err != nil {
 			return fmt.Errorf("deliveryJobRepo.CreateBatch create job: %w", err)
@@ -291,6 +296,7 @@ func toDeliveryJob(row sqlc.DeliveryJob) *domain.DeliveryJob {
 		HeartbeatAt:    toTimePtr(row.HeartbeatAt),
 		RetryCount:     row.RetryCount,
 		MaxRetries:     row.MaxRetries,
+		IsTest:         row.IsTest,
 		NextRetryAt:    toTimePtr(row.NextRetryAt),
 		LastError:      toStrPtr(row.LastError),
 		CreatedAt:      toTime(row.CreatedAt),

@@ -1,14 +1,18 @@
 package provider
 
-import "context"
+import (
+	"context"
+
+	"github.com/kennedyvnak/beaconbird/internal/domain"
+)
 
 // ProviderResult captures provider-specific identifiers returned after delivery.
 type ProviderResult struct {
 	ProviderMessageID string
 }
 
-// TODO: implement SES and FCM providers plus registry wiring.
-
-type Sender interface {
-	Send(ctx context.Context, payload []byte) (*ProviderResult, error)
+type DeliveryProvider interface {
+	Channel() domain.Channel
+	Name() string
+	Send(ctx context.Context, job domain.DeliveryJob) (*ProviderResult, error)
 }

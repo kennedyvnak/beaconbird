@@ -49,6 +49,7 @@ type DeliveryJob struct {
 	LastError      pgtype.Text
 	CreatedAt      pgtype.Timestamptz
 	UpdatedAt      pgtype.Timestamptz
+	IsTest         bool
 }
 
 type Notification struct {

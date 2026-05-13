@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:16
+    image: postgres:16-alpine
     environment:
       POSTGRES_DB: beaconbird
       POSTGRES_USER: postgres
@@ -9,6 +9,39 @@ services:
       - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+  api:
+    image: golang:1.26
+    working_dir: /app
+    command: go run ./cmd/api
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/beaconbird?sslmode=disable
+      API_PORT: "8080"
+      FCM_CREDENTIALS_JSON: /app/credentials/fcm.json
+    depends_on:
+      - postgres
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/app
+      - ./credentials:/app/credentials:ro
+  worker:
+    image: golang:1.26
+    working_dir: /app
+    command: go run ./cmd/worker
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/beaconbird?sslmode=disable
+      FCM_CREDENTIALS_JSON: /app/credentials/fcm.json
+      WORKER_POLL_INTERVAL: 5s
+      WORKER_CONCURRENCY: "10"
+      WORKER_HEARTBEAT_INTERVAL: 30s
+      WORKER_STALE_THRESHOLD: 2m
+      WORKER_BASE_DELAY: 30s
+      WORKER_MAX_DELAY: 1h
+    depends_on:
+      - postgres
+    volumes:
+      - .:/app
+      - ./credentials:/app/credentials:ro
 
 volumes:
   postgres-data:

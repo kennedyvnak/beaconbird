@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/kennedyvnak/beaconbird/internal/domain"
 	"github.com/kennedyvnak/beaconbird/internal/repository/sqlc"
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type DeliveryAttemptRepo struct {
@@ -19,7 +19,7 @@ func NewDeliveryAttemptRepo(q *sqlc.Queries) *DeliveryAttemptRepo {
 }
 
 func (r *DeliveryAttemptRepo) Create(ctx context.Context, a *domain.DeliveryAttempt) (*domain.DeliveryAttempt, error) {
-	row, err := r.q.CreateDeliveryAttempt(ctx, sqlc.CreateDeliveryAttemptParams{
+	row, err := queriesFor(ctx, r.q).CreateDeliveryAttempt(ctx, sqlc.CreateDeliveryAttemptParams{
 		ID:              a.ID,
 		DeliveryJobID:   a.DeliveryJobID,
 		AttemptNumber:   a.AttemptNumber,
@@ -38,7 +38,7 @@ func (r *DeliveryAttemptRepo) Create(ctx context.Context, a *domain.DeliveryAtte
 }
 
 func (r *DeliveryAttemptRepo) ListByJob(ctx context.Context, jobID string) ([]*domain.DeliveryAttempt, error) {
-	rows, err := r.q.ListDeliveryAttemptsByJob(ctx, jobID)
+	rows, err := queriesFor(ctx, r.q).ListDeliveryAttemptsByJob(ctx, jobID)
 	if err != nil {
 		return nil, fmt.Errorf("deliveryAttemptRepo.ListByJob: %w", err)
 	}

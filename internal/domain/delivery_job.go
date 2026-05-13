@@ -27,6 +27,7 @@ type DeliveryJob struct {
 	HeartbeatAt    *time.Time
 	RetryCount     int32
 	MaxRetries     int32
+	IsTest         bool
 	NextRetryAt    *time.Time
 	LastError      *string
 	CreatedAt      time.Time

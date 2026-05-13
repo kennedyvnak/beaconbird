@@ -75,6 +75,10 @@ func APIKeyFromContext(ctx context.Context) *domain.APIKey {
 	return k
 }
 
+func ContextWithAPIKey(ctx context.Context, key *domain.APIKey) context.Context {
+	return context.WithValue(ctx, keyAPIKey, key)
+}
+
 func bearerToken(r *http.Request) string {
 	h := r.Header.Get("Authorization")
 	if !strings.HasPrefix(h, "Bearer ") {
