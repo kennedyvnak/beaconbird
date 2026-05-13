@@ -1,6 +1,9 @@
+-include .env
+export
+
 GO ?= go
-SQLC ?= /home/kendey/go/bin/sqlc
-MIGRATE ?= /home/kendey/go/bin/migrate
+SQLC ?= sqlc
+MIGRATE ?= migrate
 
 DATABASE_URL ?= postgres://postgres:postgres@localhost:5432/beaconbird?sslmode=disable
 MIGRATIONS_DIR := db/migrations
