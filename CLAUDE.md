@@ -12,21 +12,26 @@ Two binaries:
 
 ## Architecture
 
-Clean architecture. Dependencies point inward:
+Dependencies point inward. No central interface registry.
 
 ```
-cmd → api/worker layer → usecase → port (interfaces) ← infra (implementations)
+cmd → api/worker → service → repository/provider (concrete)
 ```
 
-- `internal/domain` — pure Go types, no external imports
-- `internal/port` — interfaces for repos and providers
-- `internal/usecase` — business logic, depends only on port interfaces
-- `internal/infra/postgres` — sqlc-generated DB implementations
-- `internal/infra/provider` — SES, FCM provider implementations
+- `internal/domain` — pure Go types + status consts. No json/db/sqlc tags.
+- `internal/repository` — concrete postgres implementations wrapping sqlc
+- `internal/provider` — concrete SES, FCM implementations
+- `internal/service` — business logic (only where logic actually exists)
 - `internal/api` — chi HTTP handlers, DTOs, middleware
 - `internal/worker` — poller, executor, heartbeat, scheduler
 
-**Rule**: handlers never import infra. usecases never import api. domain imports nothing internal.
+**Interface rules**:
+- Interfaces defined in the package that consumes them, not in a central package
+- `service/` declares the repo/provider interfaces it needs inline
+- `worker/` declares its own repo interfaces inline
+- Handlers may call repos directly via inline interface if no service logic needed
+
+**Rule**: domain imports nothing internal. sqlc structs mapped to domain types at repo boundary.
 
 ## Tech stack
 
@@ -56,7 +61,7 @@ make docker-up        docker compose up -d
 
 Migrations in `db/migrations/` — always write both `.up.sql` and `.down.sql`.
 
-Query files in `db/queries/*.sql`. Generated code goes to `internal/infra/postgres/sqlc/` — never edit generated files by hand.
+Query files in `db/queries/*.sql`. Generated code goes to `internal/repository/sqlc/` — never edit generated files by hand.
 
 ## Key domain rules
 
@@ -157,7 +162,7 @@ WORKER_MAX_RETRIES=3, WORKER_BASE_DELAY=30s, WORKER_MAX_DELAY=1h
 
 - Errors wrapped with context: `fmt.Errorf("notificationRepo.Create: %w", err)`
 - No global state — everything injected via constructor. No `init()`.
-- Interfaces defined in `port/`, not next to implementations
+- Interfaces defined in consuming package, not in a central package
 - DTOs in `internal/api/dto/` — never pass domain types to HTTP layer directly
 - Context always first argument
 - Use `pgx/v5` named parameters (`@param_name` syntax)
@@ -168,14 +173,13 @@ WORKER_MAX_RETRIES=3, WORKER_BASE_DELAY=30s, WORKER_MAX_DELAY=1h
 
 1. `db/migrations/` — full schema (api_keys, providers, notifications, delivery_jobs, delivery_attempts + indexes)
 2. `db/queries/` — SQL for sqlc, then `make sqlc`
-3. `internal/domain/` — all types and status constants
-4. `internal/port/` — repository, provider, clock interfaces
-5. `internal/infra/postgres/` — repo implementations wrapping sqlc
-6. `config/config.go` — env-based config struct
-7. `cmd/api/main.go` — wire + serve (start with `/v1/health`)
-8. `internal/api/middleware/auth.go` — Bearer key validation
-9. `internal/api/handler/notification.go` — POST /v1/notifications
-10. `internal/infra/provider/ses.go`, `fcm.go`, `registry.go`
-11. `internal/usecase/notification.go` — Ingest, Cancel, Reschedule, EditContent
-12. `cmd/worker/main.go` + `internal/worker/` — poller, executor, heartbeat, scheduler
-13. Remaining API handlers and `docker-compose.yml`
+3. `internal/domain/` — all types and status constants (no tags)
+4. `internal/repository/` — concrete postgres repo impls wrapping sqlc
+5. `config/config.go` — env-based config struct
+6. `cmd/api/main.go` — wire + serve (start with `/v1/health`)
+7. `internal/api/middleware/auth.go` — Bearer key validation
+8. `internal/api/handler/notification.go` — POST /v1/notifications
+9. `internal/provider/ses.go`, `fcm.go`, `registry.go`
+10. `internal/service/notification.go` — Ingest, Cancel, Reschedule, EditContent (interfaces inline)
+11. `cmd/worker/main.go` + `internal/worker/` — poller, executor, heartbeat, scheduler
+12. Remaining API handlers and `docker-compose.yml`

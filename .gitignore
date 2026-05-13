@@ -20,6 +20,12 @@ profile.cov
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
+# Local build output
+bin/
+
+# Local credentials
+credentials/*.json
+
 # Go workspace file
 go.work
 go.work.sum
