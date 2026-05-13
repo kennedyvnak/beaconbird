@@ -11,6 +11,9 @@ import (
 type Config struct {
 	DatabaseURL             string
 	APIPort                 string
+	EnableFCMProvider       bool
+	EnableSESProvider       bool
+	EnableMockProvider      bool
 	AWSRegion               string
 	AWSAccessKeyID          string
 	AWSSecretAccessKey      string
@@ -40,6 +43,9 @@ func Load() (*Config, error) {
 	return &Config{
 		DatabaseURL:             dbURL,
 		APIPort:                 envOrDefault("API_PORT", "8080"),
+		EnableFCMProvider:       envBool("ENABLE_FCM_PROVIDER", false),
+		EnableSESProvider:       envBool("ENABLE_SES_PROVIDER", false),
+		EnableMockProvider:      envBool("ENABLE_MOCK_PROVIDER", false),
 		AWSRegion:               os.Getenv("AWS_REGION"),
 		AWSAccessKeyID:          os.Getenv("AWS_ACCESS_KEY_ID"),
 		AWSSecretAccessKey:      os.Getenv("AWS_SECRET_ACCESS_KEY"),
@@ -85,6 +91,18 @@ func envInt(key string, def int) int {
 		return def
 	}
 	return n
+}
+
+func envBool(key string, def bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	parsed, err := strconv.ParseBool(v)
+	if err != nil {
+		return def
+	}
+	return parsed
 }
 
 func newUUID() string {

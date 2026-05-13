@@ -11,7 +11,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kennedyvnak/beaconbird/config"
-	"github.com/kennedyvnak/beaconbird/internal/provider"
 	"github.com/kennedyvnak/beaconbird/internal/repository"
 	"github.com/kennedyvnak/beaconbird/internal/repository/sqlc"
 	"github.com/kennedyvnak/beaconbird/internal/worker"
@@ -43,23 +42,15 @@ func run() error {
 		return fmt.Errorf("ping db: %w", err)
 	}
 
-	credentialsJSON, err := os.ReadFile(cfg.FCMCredentialsJSON)
-	if err != nil {
-		return fmt.Errorf("read fcm credentials: %w", err)
-	}
-
-	fcmProvider, err := provider.NewFCMProvider(startupCtx, credentialsJSON)
-	if err != nil {
-		return fmt.Errorf("build fcm provider: %w", err)
-	}
-
 	queries := sqlc.New(pool)
 	jobRepo := repository.NewDeliveryJobRepo(pool, queries)
 	attemptRepo := repository.NewDeliveryAttemptRepo(queries)
 	txRunner := repository.NewTxRunner(pool)
 
-	registry := provider.NewRegistry()
-	registry.Register(fcmProvider)
+	registry, err := worker.BuildProviderRegistry(startupCtx, cfg, worker.ProviderFactories{})
+	if err != nil {
+		return err
+	}
 
 	scheduler := worker.NewScheduler(
 		jobRepo,

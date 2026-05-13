@@ -11,8 +11,10 @@ BeaconBird is a Go notification orchestration service backed by PostgreSQL.
 
 Current channel support:
 
-- Push via FCM is implemented and wired into the worker.
-- Email via SES is not finished yet. `internal/provider/ses.go` is still a placeholder.
+- Push via FCM is implemented.
+- Email via SES is implemented.
+- Providers are registered by the worker at startup based on config.
+- The mock provider is compiled in for both `push` and `email`, but is disabled by default and only fills channels that do not already have a real provider configured.
 
 ## Quick Start
 
@@ -66,6 +68,9 @@ Common API settings:
 
 Worker and provider settings:
 
+- `ENABLE_FCM_PROVIDER` default `false`
+- `ENABLE_SES_PROVIDER` default `false`
+- `ENABLE_MOCK_PROVIDER` default `false`
 - `FCM_CREDENTIALS_JSON` default `./credentials/fcm.json`
 - `WORKER_ID` auto-generated if unset
 - `WORKER_POLL_INTERVAL` default `5s`
@@ -76,12 +81,19 @@ Worker and provider settings:
 - `WORKER_BASE_DELAY` default `30s`
 - `WORKER_MAX_DELAY` default `1h`
 
-SES-related env vars exist in config but are not fully used until the SES provider is implemented:
+SES-related env vars:
 
 - `AWS_REGION`
 - `AWS_ACCESS_KEY_ID`
 - `AWS_SECRET_ACCESS_KEY`
 - `SES_FROM_EMAIL`
+
+SES payload contract for `email` jobs:
+
+- required: `to_email`
+- required: `subject`
+- one of `body_text` or `body_html` is required
+- both `body_text` and `body_html` may be provided together
 
 ## Project Structure
 
@@ -94,7 +106,7 @@ cmd -> internal/api or internal/worker -> internal/service -> internal/repositor
 Important directories:
 
 - `cmd/api` wires the HTTP server, middleware, repositories, and notification service
-- `cmd/worker` wires the poller, executor, heartbeat, scheduler, repositories, provider registry, and transaction runner
+- `cmd/worker` wires config, database, and the worker runtime entrypoint
 - `config` loads environment-based runtime configuration
 - `db/migrations` contains schema migrations
 - `db/queries` contains sqlc query definitions
@@ -106,7 +118,7 @@ Important directories:
 - `internal/repository` contains PostgreSQL-backed repositories and transaction handling
 - `internal/repository/sqlc` contains generated sqlc code and should not be edited by hand
 - `internal/provider` contains delivery-provider implementations and the provider registry
-- `internal/worker` contains the delivery runtime components
+- `internal/worker` contains the delivery runtime components and provider bootstrap
 
 ## Runtime Model
 
@@ -135,6 +147,7 @@ Worker responsibilities:
 - `executor` sends the job through the provider registry and records the result
 - `heartbeat` refreshes lock ownership for in-flight work
 - `scheduler` computes retry timing and recovers stale locked jobs
+- provider bootstrap enables `fcm`, `ses`, and mock fallback providers from config before the runtime starts
 
 ## API Surface
 
@@ -180,5 +193,5 @@ Authentication:
 
 ## Current Gaps And Cautions
 
-- SES delivery is not wired yet, so the project is not fully multi-channel despite config support for AWS credentials.
+- If a channel has no provider registered, the worker will record a failed attempt and dead-letter the job.
 - The Docker compose stack starts Postgres, API, and Worker, but migrations still need to be applied explicitly.
