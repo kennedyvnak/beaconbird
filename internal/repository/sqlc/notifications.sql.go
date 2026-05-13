@@ -101,6 +101,20 @@ func (q *Queries) CreateNotification(ctx context.Context, arg CreateNotification
 	return i, err
 }
 
+const deleteNotification = `-- name: DeleteNotification :execrows
+DELETE from notifications
+WHERE id = $1
+RETURNING id, idempotency_key, status, tag, content, metadata, send_at, created_at, updated_at, cancelled_at
+`
+
+func (q *Queries) DeleteNotification(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteNotification, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getNotification = `-- name: GetNotification :one
 SELECT id, idempotency_key, status, tag, content, metadata, send_at, created_at, updated_at, cancelled_at
 FROM notifications
@@ -176,6 +190,73 @@ func (q *Queries) ListNotifications(ctx context.Context, arg ListNotificationsPa
 		arg.Tag,
 		arg.FromTime,
 		arg.ToTime,
+		arg.OffsetCount,
+		arg.LimitCount,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Notification
+	for rows.Next() {
+		var i Notification
+		if err := rows.Scan(
+			&i.ID,
+			&i.IdempotencyKey,
+			&i.Status,
+			&i.Tag,
+			&i.Content,
+			&i.Metadata,
+			&i.SendAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.CancelledAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listNotificationsByChannel = `-- name: ListNotificationsByChannel :many
+SELECT n.id, n.idempotency_key, n.status, n.tag, n.content, n.metadata, n.send_at, n.created_at, n.updated_at, n.cancelled_at
+FROM notifications n
+WHERE ($1 = '' OR n.status = $1)
+  AND ($2 = '' OR n.tag = $2)
+  AND n.send_at >= $3
+  AND n.send_at <= $4
+  AND EXISTS (
+    SELECT 1
+    FROM delivery_jobs dj
+    WHERE dj.notification_id = n.id
+      AND dj.channel = $5
+  )
+ORDER BY n.created_at DESC
+LIMIT $7
+OFFSET $6
+`
+
+type ListNotificationsByChannelParams struct {
+	Status      interface{}
+	Tag         interface{}
+	FromTime    pgtype.Timestamptz
+	ToTime      pgtype.Timestamptz
+	Channel     string
+	OffsetCount int32
+	LimitCount  int32
+}
+
+func (q *Queries) ListNotificationsByChannel(ctx context.Context, arg ListNotificationsByChannelParams) ([]Notification, error) {
+	rows, err := q.db.Query(ctx, listNotificationsByChannel,
+		arg.Status,
+		arg.Tag,
+		arg.FromTime,
+		arg.ToTime,
+		arg.Channel,
 		arg.OffsetCount,
 		arg.LimitCount,
 	)

@@ -5,20 +5,22 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/kennedyvnak/beaconbird/internal/domain"
 	"github.com/kennedyvnak/beaconbird/internal/repository/sqlc"
 )
 
 type DeliveryJobRepo struct {
-	q *sqlc.Queries
+	db sqlc.DBTX
+	q  *sqlc.Queries
 }
 
-func NewDeliveryJobRepo(q *sqlc.Queries) *DeliveryJobRepo {
-	return &DeliveryJobRepo{q: q}
+func NewDeliveryJobRepo(db sqlc.DBTX, q *sqlc.Queries) *DeliveryJobRepo {
+	return &DeliveryJobRepo{db: db, q: q}
 }
 
 func (r *DeliveryJobRepo) Create(ctx context.Context, j *domain.DeliveryJob) (*domain.DeliveryJob, error) {
-	row, err := r.q.CreateDeliveryJob(ctx, sqlc.CreateDeliveryJobParams{
+	row, err := queriesFor(ctx, r.q).CreateDeliveryJob(ctx, sqlc.CreateDeliveryJobParams{
 		ID:             j.ID,
 		NotificationID: j.NotificationID,
 		ProviderID:     toPgText(j.ProviderID),
@@ -35,7 +37,7 @@ func (r *DeliveryJobRepo) Create(ctx context.Context, j *domain.DeliveryJob) (*d
 }
 
 func (r *DeliveryJobRepo) GetByID(ctx context.Context, id string) (*domain.DeliveryJob, error) {
-	row, err := r.q.GetDeliveryJob(ctx, id)
+	row, err := queriesFor(ctx, r.q).GetDeliveryJob(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("deliveryJobRepo.GetByID: %w", err)
 	}
@@ -43,22 +45,24 @@ func (r *DeliveryJobRepo) GetByID(ctx context.Context, id string) (*domain.Deliv
 }
 
 type ListDeliveryJobsParams struct {
-	Status  string
-	Channel string
-	From    time.Time
-	To      time.Time
-	Offset  int32
-	Limit   int32
+	Status         string
+	Channel        string
+	NotificationID string
+	From           time.Time
+	To             time.Time
+	Offset         int32
+	Limit          int32
 }
 
 func (r *DeliveryJobRepo) List(ctx context.Context, p ListDeliveryJobsParams) ([]*domain.DeliveryJob, error) {
-	rows, err := r.q.ListDeliveryJobs(ctx, sqlc.ListDeliveryJobsParams{
-		Status:      p.Status,
-		Channel:     p.Channel,
-		FromTime:    toPgTime(p.From),
-		ToTime:      toPgTime(p.To),
-		OffsetCount: p.Offset,
-		LimitCount:  p.Limit,
+	rows, err := queriesFor(ctx, r.q).ListDeliveryJobs(ctx, sqlc.ListDeliveryJobsParams{
+		Status:         p.Status,
+		Channel:        p.Channel,
+		NotificationID: p.NotificationID,
+		FromTime:       toPgTime(p.From),
+		ToTime:         toPgTime(p.To),
+		OffsetCount:    p.Offset,
+		LimitCount:     p.Limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("deliveryJobRepo.List: %w", err)
@@ -71,7 +75,7 @@ func (r *DeliveryJobRepo) List(ctx context.Context, p ListDeliveryJobsParams) ([
 }
 
 func (r *DeliveryJobRepo) ListReady(ctx context.Context, readyAt time.Time, limit int32) ([]*domain.DeliveryJob, error) {
-	rows, err := r.q.ListReadyDeliveryJobs(ctx, sqlc.ListReadyDeliveryJobsParams{
+	rows, err := queriesFor(ctx, r.q).ListReadyDeliveryJobs(ctx, sqlc.ListReadyDeliveryJobsParams{
 		ReadyAt:    toPgTime(readyAt),
 		LimitCount: limit,
 	})
@@ -87,7 +91,7 @@ func (r *DeliveryJobRepo) ListReady(ctx context.Context, readyAt time.Time, limi
 
 func (r *DeliveryJobRepo) MarkProcessing(ctx context.Context, id, workerID string) (*domain.DeliveryJob, error) {
 	now := time.Now().UTC()
-	row, err := r.q.MarkDeliveryJobProcessing(ctx, sqlc.MarkDeliveryJobProcessingParams{
+	row, err := queriesFor(ctx, r.q).MarkDeliveryJobProcessing(ctx, sqlc.MarkDeliveryJobProcessingParams{
 		ID:          id,
 		LockedAt:    toPgTime(now),
 		LockedBy:    toPgText(&workerID),
@@ -101,7 +105,7 @@ func (r *DeliveryJobRepo) MarkProcessing(ctx context.Context, id, workerID strin
 }
 
 func (r *DeliveryJobRepo) MarkSent(ctx context.Context, id string) (*domain.DeliveryJob, error) {
-	row, err := r.q.MarkDeliveryJobSent(ctx, sqlc.MarkDeliveryJobSentParams{
+	row, err := queriesFor(ctx, r.q).MarkDeliveryJobSent(ctx, sqlc.MarkDeliveryJobSentParams{
 		ID:        id,
 		UpdatedAt: toPgTime(time.Now().UTC()),
 	})
@@ -112,7 +116,7 @@ func (r *DeliveryJobRepo) MarkSent(ctx context.Context, id string) (*domain.Deli
 }
 
 func (r *DeliveryJobRepo) MarkRetry(ctx context.Context, id string, nextRetryAt time.Time, lastError *string) (*domain.DeliveryJob, error) {
-	row, err := r.q.MarkDeliveryJobForRetry(ctx, sqlc.MarkDeliveryJobForRetryParams{
+	row, err := queriesFor(ctx, r.q).MarkDeliveryJobForRetry(ctx, sqlc.MarkDeliveryJobForRetryParams{
 		ID:          id,
 		NextRetryAt: toPgTime(nextRetryAt),
 		LastError:   toPgText(lastError),
@@ -125,7 +129,7 @@ func (r *DeliveryJobRepo) MarkRetry(ctx context.Context, id string, nextRetryAt 
 }
 
 func (r *DeliveryJobRepo) MarkDeadLetter(ctx context.Context, id string, lastError *string) (*domain.DeliveryJob, error) {
-	row, err := r.q.MarkDeliveryJobDeadLetter(ctx, sqlc.MarkDeliveryJobDeadLetterParams{
+	row, err := queriesFor(ctx, r.q).MarkDeliveryJobDeadLetter(ctx, sqlc.MarkDeliveryJobDeadLetterParams{
 		ID:        id,
 		LastError: toPgText(lastError),
 		UpdatedAt: toPgTime(time.Now().UTC()),
@@ -137,7 +141,7 @@ func (r *DeliveryJobRepo) MarkDeadLetter(ctx context.Context, id string, lastErr
 }
 
 func (r *DeliveryJobRepo) CancelForNotification(ctx context.Context, notificationID string) ([]*domain.DeliveryJob, error) {
-	rows, err := r.q.CancelDeliveryJobsForNotification(ctx, sqlc.CancelDeliveryJobsForNotificationParams{
+	rows, err := queriesFor(ctx, r.q).CancelDeliveryJobsForNotification(ctx, sqlc.CancelDeliveryJobsForNotificationParams{
 		NotificationID: notificationID,
 		UpdatedAt:      toPgTime(time.Now().UTC()),
 	})
@@ -152,7 +156,7 @@ func (r *DeliveryJobRepo) CancelForNotification(ctx context.Context, notificatio
 }
 
 func (r *DeliveryJobRepo) ResetStale(ctx context.Context, staleBefore time.Time) ([]*domain.DeliveryJob, error) {
-	rows, err := r.q.ResetStaleDeliveryJobs(ctx, sqlc.ResetStaleDeliveryJobsParams{
+	rows, err := queriesFor(ctx, r.q).ResetStaleDeliveryJobs(ctx, sqlc.ResetStaleDeliveryJobsParams{
 		StaleBefore: toPgTime(staleBefore),
 		UpdatedAt:   toPgTime(time.Now().UTC()),
 	})
@@ -168,7 +172,7 @@ func (r *DeliveryJobRepo) ResetStale(ctx context.Context, staleBefore time.Time)
 
 func (r *DeliveryJobRepo) UpdateHeartbeat(ctx context.Context, workerID string) error {
 	now := time.Now().UTC()
-	_, err := r.q.UpdateHeartbeatForWorker(ctx, sqlc.UpdateHeartbeatForWorkerParams{
+	_, err := queriesFor(ctx, r.q).UpdateHeartbeatForWorker(ctx, sqlc.UpdateHeartbeatForWorkerParams{
 		LockedBy:    toPgText(&workerID),
 		HeartbeatAt: toPgTime(now),
 		UpdatedAt:   toPgTime(now),
@@ -177,6 +181,100 @@ func (r *DeliveryJobRepo) UpdateHeartbeat(ctx context.Context, workerID string) 
 		return fmt.Errorf("deliveryJobRepo.UpdateHeartbeat: %w", err)
 	}
 	return nil
+}
+
+func (r *DeliveryJobRepo) CreateBatch(ctx context.Context, jobs []*domain.DeliveryJob) error {
+	if q := queriesFor(ctx, r.q); q != r.q {
+		for _, job := range jobs {
+			_, err := q.CreateDeliveryJob(ctx, sqlc.CreateDeliveryJobParams{
+				ID:             job.ID,
+				NotificationID: job.NotificationID,
+				ProviderID:     toPgText(job.ProviderID),
+				Channel:        string(job.Channel),
+				Status:         string(job.Status),
+				Payload:        marshalJSON(job.Payload),
+				SendAt:         toPgTime(job.SendAt),
+				MaxRetries:     job.MaxRetries,
+			})
+			if err != nil {
+				return fmt.Errorf("deliveryJobRepo.CreateBatch create job: %w", err)
+			}
+		}
+		return nil
+	}
+
+	beginner, ok := r.db.(interface {
+		Begin(context.Context) (pgx.Tx, error)
+	})
+	if !ok {
+		return fmt.Errorf("deliveryJobRepo.CreateBatch: db does not support transactions")
+	}
+
+	tx, err := beginner.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("deliveryJobRepo.CreateBatch begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	q := r.q.WithTx(tx)
+	for _, job := range jobs {
+		_, err := q.CreateDeliveryJob(ctx, sqlc.CreateDeliveryJobParams{
+			ID:             job.ID,
+			NotificationID: job.NotificationID,
+			ProviderID:     toPgText(job.ProviderID),
+			Channel:        string(job.Channel),
+			Status:         string(job.Status),
+			Payload:        marshalJSON(job.Payload),
+			SendAt:         toPgTime(job.SendAt),
+			MaxRetries:     job.MaxRetries,
+		})
+		if err != nil {
+			return fmt.Errorf("deliveryJobRepo.CreateBatch create job: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("deliveryJobRepo.CreateBatch commit: %w", err)
+	}
+	return nil
+}
+
+func (r *DeliveryJobRepo) RescheduleForNotification(ctx context.Context, notificationID string, sendAt time.Time) error {
+	_, err := queriesFor(ctx, r.q).RescheduleDeliveryJobsForNotification(ctx, sqlc.RescheduleDeliveryJobsForNotificationParams{
+		SendAt:         toPgTime(sendAt),
+		UpdatedAt:      toPgTime(time.Now().UTC()),
+		NotificationID: notificationID,
+	})
+	if err != nil {
+		return fmt.Errorf("deliveryJobRepo.RescheduleForNotification: %w", err)
+	}
+	return nil
+}
+
+func (r *DeliveryJobRepo) UpdatePayloadForNotification(ctx context.Context, notificationID string, payload map[string]any) error {
+	rowsAffected, err := queriesFor(ctx, r.q).UpdateDeliveryJobPayloadForNotification(ctx, sqlc.UpdateDeliveryJobPayloadForNotificationParams{
+		Payload:        marshalJSON(payload),
+		UpdatedAt:      toPgTime(time.Now().UTC()),
+		NotificationID: notificationID,
+	})
+	if err != nil {
+		return fmt.Errorf("deliveryJobRepo.UpdatePayloadForNotification: %w", err)
+	}
+	if rowsAffected == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+func (r *DeliveryJobRepo) ListByNotificationID(ctx context.Context, notificationID string) ([]*domain.DeliveryJob, error) {
+	rows, err := queriesFor(ctx, r.q).ListDeliveryJobsByNotificationID(ctx, notificationID)
+	if err != nil {
+		return nil, fmt.Errorf("deliveryJobRepo.ListByNotificationID: %w", err)
+	}
+	result := make([]*domain.DeliveryJob, len(rows))
+	for i, row := range rows {
+		result[i] = toDeliveryJob(row)
+	}
+	return result, nil
 }
 
 func toDeliveryJob(row sqlc.DeliveryJob) *domain.DeliveryJob {

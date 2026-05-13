@@ -34,3 +34,7 @@ RETURNING *;
 UPDATE api_keys
 SET last_used_at = @last_used_at
 WHERE id = @id;
+
+-- name: DeleteAPIKey :execrows
+DELETE FROM api_keys
+WHERE id = @id;

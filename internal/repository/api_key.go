@@ -5,16 +5,18 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/kennedyvnak/beaconbird/internal/domain"
 	"github.com/kennedyvnak/beaconbird/internal/repository/sqlc"
 )
 
 type APIKeyRepo struct {
-	q *sqlc.Queries
+	db sqlc.DBTX
+	q  *sqlc.Queries
 }
 
-func NewAPIKeyRepo(q *sqlc.Queries) *APIKeyRepo {
-	return &APIKeyRepo{q: q}
+func NewAPIKeyRepo(db sqlc.DBTX, q *sqlc.Queries) *APIKeyRepo {
+	return &APIKeyRepo{db: db, q: q}
 }
 
 func (r *APIKeyRepo) Create(ctx context.Context, k *domain.APIKey) (*domain.APIKey, error) {
@@ -68,6 +70,17 @@ func (r *APIKeyRepo) TouchLastUsed(ctx context.Context, id string) error {
 	})
 	if err != nil {
 		return fmt.Errorf("apiKeyRepo.TouchLastUsed: %w", err)
+	}
+	return nil
+}
+
+func (r *APIKeyRepo) Delete(ctx context.Context, id string) error {
+	rows, err := r.q.DeleteAPIKey(ctx, id)
+	if err != nil {
+		return fmt.Errorf("apiKeyRepo.Delete: %w", err)
+	}
+	if rows == 0 {
+		return pgx.ErrNoRows
 	}
 	return nil
 }

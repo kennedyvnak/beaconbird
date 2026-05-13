@@ -167,31 +167,78 @@ SELECT id, notification_id, provider_id, channel, status, payload, send_at, lock
 FROM delivery_jobs
 WHERE ($1 = '' OR status = $1)
   AND ($2 = '' OR channel = $2)
-  AND send_at >= $3
-  AND send_at <= $4
+  AND ($3 = '' OR notification_id = $3)
+  AND send_at >= $4
+  AND send_at <= $5
 ORDER BY created_at DESC
-LIMIT $6
-OFFSET $5
+LIMIT $7
+OFFSET $6
 `
 
 type ListDeliveryJobsParams struct {
-	Status      interface{}
-	Channel     interface{}
-	FromTime    pgtype.Timestamptz
-	ToTime      pgtype.Timestamptz
-	OffsetCount int32
-	LimitCount  int32
+	Status         interface{}
+	Channel        interface{}
+	NotificationID interface{}
+	FromTime       pgtype.Timestamptz
+	ToTime         pgtype.Timestamptz
+	OffsetCount    int32
+	LimitCount     int32
 }
 
 func (q *Queries) ListDeliveryJobs(ctx context.Context, arg ListDeliveryJobsParams) ([]DeliveryJob, error) {
 	rows, err := q.db.Query(ctx, listDeliveryJobs,
 		arg.Status,
 		arg.Channel,
+		arg.NotificationID,
 		arg.FromTime,
 		arg.ToTime,
 		arg.OffsetCount,
 		arg.LimitCount,
 	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DeliveryJob
+	for rows.Next() {
+		var i DeliveryJob
+		if err := rows.Scan(
+			&i.ID,
+			&i.NotificationID,
+			&i.ProviderID,
+			&i.Channel,
+			&i.Status,
+			&i.Payload,
+			&i.SendAt,
+			&i.LockedAt,
+			&i.LockedBy,
+			&i.HeartbeatAt,
+			&i.RetryCount,
+			&i.MaxRetries,
+			&i.NextRetryAt,
+			&i.LastError,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeliveryJobsByNotificationID = `-- name: ListDeliveryJobsByNotificationID :many
+SELECT id, notification_id, provider_id, channel, status, payload, send_at, locked_at, locked_by, heartbeat_at, retry_count, max_retries, next_retry_at, last_error, created_at, updated_at
+FROM delivery_jobs
+WHERE notification_id = $1
+ORDER BY created_at DESC
+`
+
+func (q *Queries) ListDeliveryJobsByNotificationID(ctx context.Context, notificationID string) ([]DeliveryJob, error) {
+	rows, err := q.db.Query(ctx, listDeliveryJobsByNotificationID, notificationID)
 	if err != nil {
 		return nil, err
 	}
@@ -464,6 +511,28 @@ func (q *Queries) MarkDeliveryJobSent(ctx context.Context, arg MarkDeliveryJobSe
 	return i, err
 }
 
+const rescheduleDeliveryJobsForNotification = `-- name: RescheduleDeliveryJobsForNotification :execrows
+UPDATE delivery_jobs
+SET send_at = $1,
+    updated_at = $2
+WHERE notification_id = $3
+  AND status IN ('pending', 'retrying')
+`
+
+type RescheduleDeliveryJobsForNotificationParams struct {
+	SendAt         pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+	NotificationID string
+}
+
+func (q *Queries) RescheduleDeliveryJobsForNotification(ctx context.Context, arg RescheduleDeliveryJobsForNotificationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, rescheduleDeliveryJobsForNotification, arg.SendAt, arg.UpdatedAt, arg.NotificationID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const resetStaleDeliveryJobs = `-- name: ResetStaleDeliveryJobs :many
 UPDATE delivery_jobs
 SET status = CASE
@@ -520,6 +589,28 @@ func (q *Queries) ResetStaleDeliveryJobs(ctx context.Context, arg ResetStaleDeli
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateDeliveryJobPayloadForNotification = `-- name: UpdateDeliveryJobPayloadForNotification :execrows
+UPDATE delivery_jobs
+SET payload = $1,
+    updated_at = $2
+WHERE notification_id = $3
+  AND status = 'pending'
+`
+
+type UpdateDeliveryJobPayloadForNotificationParams struct {
+	Payload        []byte
+	UpdatedAt      pgtype.Timestamptz
+	NotificationID string
+}
+
+func (q *Queries) UpdateDeliveryJobPayloadForNotification(ctx context.Context, arg UpdateDeliveryJobPayloadForNotificationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateDeliveryJobPayloadForNotification, arg.Payload, arg.UpdatedAt, arg.NotificationID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const updateHeartbeatForWorker = `-- name: UpdateHeartbeatForWorker :many

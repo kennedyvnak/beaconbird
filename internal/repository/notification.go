@@ -5,20 +5,22 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/kennedyvnak/beaconbird/internal/domain"
 	"github.com/kennedyvnak/beaconbird/internal/repository/sqlc"
 )
 
 type NotificationRepo struct {
-	q *sqlc.Queries
+	db sqlc.DBTX
+	q  *sqlc.Queries
 }
 
-func NewNotificationRepo(q *sqlc.Queries) *NotificationRepo {
-	return &NotificationRepo{q: q}
+func NewNotificationRepo(db sqlc.DBTX, q *sqlc.Queries) *NotificationRepo {
+	return &NotificationRepo{db: db, q: q}
 }
 
 func (r *NotificationRepo) Create(ctx context.Context, n *domain.Notification) (*domain.Notification, error) {
-	row, err := r.q.CreateNotification(ctx, sqlc.CreateNotificationParams{
+	row, err := queriesFor(ctx, r.q).CreateNotification(ctx, sqlc.CreateNotificationParams{
 		ID:             n.ID,
 		IdempotencyKey: n.IdempotencyKey,
 		Status:         string(n.Status),
@@ -34,7 +36,7 @@ func (r *NotificationRepo) Create(ctx context.Context, n *domain.Notification) (
 }
 
 func (r *NotificationRepo) GetByID(ctx context.Context, id string) (*domain.Notification, error) {
-	row, err := r.q.GetNotification(ctx, id)
+	row, err := queriesFor(ctx, r.q).GetNotification(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("notificationRepo.GetByID: %w", err)
 	}
@@ -42,7 +44,7 @@ func (r *NotificationRepo) GetByID(ctx context.Context, id string) (*domain.Noti
 }
 
 func (r *NotificationRepo) GetByIdempotencyKey(ctx context.Context, key string) (*domain.Notification, error) {
-	row, err := r.q.GetNotificationByIdempotencyKey(ctx, key)
+	row, err := queriesFor(ctx, r.q).GetNotificationByIdempotencyKey(ctx, key)
 	if err != nil {
 		return nil, fmt.Errorf("notificationRepo.GetByIdempotencyKey: %w", err)
 	}
@@ -50,23 +52,41 @@ func (r *NotificationRepo) GetByIdempotencyKey(ctx context.Context, key string) 
 }
 
 type ListNotificationsParams struct {
-	Status string
-	Tag    string
-	From   time.Time
-	To     time.Time
-	Offset int32
-	Limit  int32
+	Status  string
+	Tag     string
+	Channel string
+	From    time.Time
+	To      time.Time
+	Offset  int32
+	Limit   int32
 }
 
 func (r *NotificationRepo) List(ctx context.Context, p ListNotificationsParams) ([]*domain.Notification, error) {
-	rows, err := r.q.ListNotifications(ctx, sqlc.ListNotificationsParams{
-		Status:      p.Status,
-		Tag:         p.Tag,
-		FromTime:    toPgTime(p.From),
-		ToTime:      toPgTime(p.To),
-		OffsetCount: p.Offset,
-		LimitCount:  p.Limit,
-	})
+	q := queriesFor(ctx, r.q)
+	var (
+		rows []sqlc.Notification
+		err  error
+	)
+	if p.Channel == "" {
+		rows, err = q.ListNotifications(ctx, sqlc.ListNotificationsParams{
+			Status:      p.Status,
+			Tag:         p.Tag,
+			FromTime:    toPgTime(p.From),
+			ToTime:      toPgTime(p.To),
+			OffsetCount: p.Offset,
+			LimitCount:  p.Limit,
+		})
+	} else {
+		rows, err = q.ListNotificationsByChannel(ctx, sqlc.ListNotificationsByChannelParams{
+			Status:      p.Status,
+			Tag:         p.Tag,
+			Channel:     p.Channel,
+			FromTime:    toPgTime(p.From),
+			ToTime:      toPgTime(p.To),
+			OffsetCount: p.Offset,
+			LimitCount:  p.Limit,
+		})
+	}
 	if err != nil {
 		return nil, fmt.Errorf("notificationRepo.List: %w", err)
 	}
@@ -78,7 +98,7 @@ func (r *NotificationRepo) List(ctx context.Context, p ListNotificationsParams) 
 }
 
 func (r *NotificationRepo) UpdateStatus(ctx context.Context, id string, status domain.NotificationStatus) (*domain.Notification, error) {
-	row, err := r.q.UpdateNotificationStatus(ctx, sqlc.UpdateNotificationStatusParams{
+	row, err := queriesFor(ctx, r.q).UpdateNotificationStatus(ctx, sqlc.UpdateNotificationStatusParams{
 		ID:        id,
 		Status:    string(status),
 		UpdatedAt: toPgTime(time.Now().UTC()),
@@ -91,7 +111,7 @@ func (r *NotificationRepo) UpdateStatus(ctx context.Context, id string, status d
 
 func (r *NotificationRepo) Cancel(ctx context.Context, id string) (*domain.Notification, error) {
 	now := time.Now().UTC()
-	row, err := r.q.CancelNotification(ctx, sqlc.CancelNotificationParams{
+	row, err := queriesFor(ctx, r.q).CancelNotification(ctx, sqlc.CancelNotificationParams{
 		ID:          id,
 		CancelledAt: toPgTime(now),
 		UpdatedAt:   toPgTime(now),
@@ -103,7 +123,7 @@ func (r *NotificationRepo) Cancel(ctx context.Context, id string) (*domain.Notif
 }
 
 func (r *NotificationRepo) Reschedule(ctx context.Context, id string, sendAt time.Time) (*domain.Notification, error) {
-	row, err := r.q.RescheduleNotification(ctx, sqlc.RescheduleNotificationParams{
+	row, err := queriesFor(ctx, r.q).RescheduleNotification(ctx, sqlc.RescheduleNotificationParams{
 		ID:        id,
 		SendAt:    toPgTime(sendAt),
 		UpdatedAt: toPgTime(time.Now().UTC()),
@@ -115,7 +135,7 @@ func (r *NotificationRepo) Reschedule(ctx context.Context, id string, sendAt tim
 }
 
 func (r *NotificationRepo) UpdateContent(ctx context.Context, id string, content, metadata map[string]any) (*domain.Notification, error) {
-	row, err := r.q.UpdateNotificationContent(ctx, sqlc.UpdateNotificationContentParams{
+	row, err := queriesFor(ctx, r.q).UpdateNotificationContent(ctx, sqlc.UpdateNotificationContentParams{
 		ID:        id,
 		Content:   marshalJSON(content),
 		Metadata:  marshalJSON(metadata),
@@ -125,6 +145,17 @@ func (r *NotificationRepo) UpdateContent(ctx context.Context, id string, content
 		return nil, fmt.Errorf("notificationRepo.UpdateContent: %w", err)
 	}
 	return toNotification(row), nil
+}
+
+func (r *NotificationRepo) Delete(ctx context.Context, id string) error {
+	rows, err := queriesFor(ctx, r.q).DeleteNotification(ctx, id)
+	if err != nil {
+		return fmt.Errorf("notificationRepo.Delete: %w", err)
+	}
+	if rows == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
 }
 
 func toNotification(row sqlc.Notification) *domain.Notification {

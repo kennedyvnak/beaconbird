@@ -25,11 +25,18 @@ SELECT *
 FROM delivery_jobs
 WHERE id = @id;
 
+-- name: ListDeliveryJobsByNotificationID :many
+SELECT *
+FROM delivery_jobs
+WHERE notification_id = @notification_id
+ORDER BY created_at DESC;
+
 -- name: ListDeliveryJobs :many
 SELECT *
 FROM delivery_jobs
 WHERE (@status = '' OR status = @status)
   AND (@channel = '' OR channel = @channel)
+  AND (@notification_id = '' OR notification_id = @notification_id)
   AND send_at >= @from_time
   AND send_at <= @to_time
 ORDER BY created_at DESC
@@ -126,3 +133,17 @@ SET heartbeat_at = @heartbeat_at,
 WHERE locked_by = @locked_by
   AND status = 'processing'
 RETURNING *;
+
+-- name: RescheduleDeliveryJobsForNotification :execrows
+UPDATE delivery_jobs
+SET send_at = @send_at,
+    updated_at = @updated_at
+WHERE notification_id = @notification_id
+  AND status IN ('pending', 'retrying');
+
+-- name: UpdateDeliveryJobPayloadForNotification :execrows
+UPDATE delivery_jobs
+SET payload = @payload,
+    updated_at = @updated_at
+WHERE notification_id = @notification_id
+  AND status = 'pending';

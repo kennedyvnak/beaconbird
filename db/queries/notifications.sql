@@ -39,6 +39,23 @@ ORDER BY created_at DESC
 LIMIT @limit_count
 OFFSET @offset_count;
 
+-- name: ListNotificationsByChannel :many
+SELECT n.*
+FROM notifications n
+WHERE (@status = '' OR n.status = @status)
+  AND (@tag = '' OR n.tag = @tag)
+  AND n.send_at >= @from_time
+  AND n.send_at <= @to_time
+  AND EXISTS (
+    SELECT 1
+    FROM delivery_jobs dj
+    WHERE dj.notification_id = n.id
+      AND dj.channel = @channel
+  )
+ORDER BY n.created_at DESC
+LIMIT @limit_count
+OFFSET @offset_count;
+
 -- name: UpdateNotificationStatus :one
 UPDATE notifications
 SET status = @status,
@@ -66,5 +83,10 @@ UPDATE notifications
 SET content = @content,
     metadata = @metadata,
     updated_at = @updated_at
+WHERE id = @id
+RETURNING *;
+
+-- name: DeleteNotification :execrows
+DELETE from notifications
 WHERE id = @id
 RETURNING *;
